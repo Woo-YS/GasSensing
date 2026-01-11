@@ -6,8 +6,13 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix, classification_report
+from sklearn.model_selection import train_test_split, StratifiedKFold
+
 import torch
+from torch import nn
 import torch.nn.functional as F
 import lightning as L
 from lightning.pytorch.loggers import WandbLogger
@@ -43,11 +48,17 @@ class GasClsModel(L.LightningModule):
             input_length=input_length,
             num_classes=num_classes,
         )
+
+        # One-Hot Encoding loss_fn
+        self.criterion = nn.BCEWithLogitsLoss()
         
         self.test_acc = MulticlassAccuracy(num_classes=num_classes)
         self.test_precision = MulticlassPrecision(num_classes=num_classes, average="macro")
         self.test_recall = MulticlassRecall(num_classes=num_classes, average="macro")
         self.test_f1 = MulticlassF1Score(num_classes=num_classes, average="macro")
+
+        self.test_preds = []
+        self.test_targets = []
 
     def forward(self, x):
         return self.model(x)
@@ -56,8 +67,16 @@ class GasClsModel(L.LightningModule):
         x, y = batch
         logits = self(x)
 
-        loss = F.cross_entropy(logits, y)
-        acc = (logits.argmax(dim=1) == y).float().mean()
+        # # Index
+        # loss = F.cross_entropy(logits, y)
+        # acc = (logits.argmax(dim=1) == y).float().mean()
+
+        # One-Hot Encoding
+        loss = self.criterion(logits, y)
+
+        preds = torch.argmax(logits, dim=1)
+        targets = torch.argmax(y, dim=1)
+        acc = (preds == targets).float().mean()
 
         self.log("train_loss", loss, on_epoch=True, prog_bar=True)
         self.log("train_acc", acc, on_epoch=True, prog_bar=True)
@@ -68,8 +87,16 @@ class GasClsModel(L.LightningModule):
         x, y = batch
         logits = self(x)
 
-        loss = F.cross_entropy(logits, y)
-        acc = (logits.argmax(dim=1) == y).float().mean()
+        # # Index
+        # loss = F.cross_entropy(logits, y)
+        # acc = (logits.argmax(dim=1) == y).float().mean()
+
+        # One-Hot Encoding
+        loss = self.criterion(logits, y)
+        
+        preds = torch.argmax(logits, dim=1)
+        targets = torch.argmax(y, dim=1)
+        acc = (preds == targets).float().mean()
 
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
@@ -77,24 +104,60 @@ class GasClsModel(L.LightningModule):
     def test_step(self, batch, batch_idx):
         x, y = batch
         logits = self(x)
-        preds = torch.argmax(logits, dim=1)
 
-        loss = F.cross_entropy(logits, y)
-        acc = (logits.argmax(dim=1) == y).float().mean()
+        # # Index
+        # preds = torch.argmax(logits, dim=1)
+        # loss = F.cross_entropy(logits, y)
+        # acc = (logits.argmax(dim=1) == y).float().mean()
+
+        # One-Hot Encoding
+        loss = self.criterion(logits, y)
+        
+        preds = torch.argmax(logits, dim=1)
+        targets = torch.argmax(y, dim=1)
+
+        self.test_acc(preds, targets)
+        self.test_precision(preds, targets)
+        self.test_recall(preds, targets)
+        self.test_f1(preds, targets)
+
+        self.test_preds.append(preds.detach().cpu())
+        self.test_targets.append(targets.detach().cpu())
 
         self.log("test_loss", loss)
-        self.log("test_acc", acc)
-
-        self.test_acc(preds, y)
-        self.test_precision(preds, y)
-        self.test_recall(preds, y)
-        self.test_f1(preds, y)
-
         self.log("test/acc", self.test_acc, prog_bar=True)
         self.log("test/precision", self.test_precision)
         self.log("test/recall", self.test_recall)
         self.log("test/f1", self.test_f1)
 
+    def on_test_epoch_end(self):
+        preds = torch.cat(self.test_preds).numpy()
+        targets = torch.cat(self.test_targets).numpy()
+        cm = confusion_matrix(targets, preds)
+
+        class_names = ["acetone", "benzene", "toluene"]
+        plt.figure(figsize=(6, 5))
+        sns.heatmap(
+            cm,
+            annot=True,
+            fmt="d",
+            cmap="Blues",
+            xticklabels=class_names,
+            yticklabels=class_names
+        )
+        plt.xlabel("Predicted label")
+        plt.ylabel("True label")
+        plt.title("Confusion Matrix")
+
+        save_path = os.path.join("./result", f"cm_{args.model_name}_{datetime.now().strftime("%m%d_%H%M%S")}.png")
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300)
+        plt.close()
+
+        # reset (안 하면 여러 test run 시 누적됨)
+        self.test_preds.clear()
+        self.test_targets.clear()
+    
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
@@ -113,11 +176,14 @@ def build_samples(df: dict, gas_to_label: dict):
             labels.append(label)
 
     x = np.stack(samples)
-    y = np.array(labels)
+    num_classes = len(gas_to_label)
+    y_index = np.array(labels)
+    y_onehot = np.eye(num_classes, dtype=np.float32)[labels]
 
     print("x shape", x.shape)
-    print("y shape", y.shape)
-    return x, y
+    print("y_index shape", y_index.shape)
+    print("y_onehot shape", y_onehot.shape)
+    return x, y_index, y_onehot
 
 def main(args):
     os.makedirs(args.save, exist_ok=True)
@@ -136,7 +202,7 @@ def main(args):
     )
     wandb_logger = WandbLogger(
         project="Gas",
-        name=f"{args.model_name}_{datetime.now().strftime("%H%M%S")}"
+        name=f"{args.model_name}_{datetime.now().strftime("%m%d_%H%M%S")}"
     )
     
     gas_to_label = {
@@ -157,13 +223,19 @@ def main(args):
             obj = pickle.load(f)
 
         df[gas][data_type] = obj
-    X, y = build_samples(df, gas_to_label)
+    X, y_index, y_onehot = build_samples(df, gas_to_label)
+
+    # skf = StratifiedKFold(
+    #     n_splits=5,
+    #     shuffle=True,
+    #     random_state=SEED
+    # )
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
+        X, y_onehot,
         test_size=0.2,
         random_state=SEED,
-        stratify=y,
+        stratify=y_onehot,
     )
 
     train_data = (X_train, y_train)

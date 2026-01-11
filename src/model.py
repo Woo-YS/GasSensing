@@ -9,6 +9,12 @@ def create_model(
 ):
     if model == "cnn1d":
         return CNN1DClassifier(input_length, num_classes)
+    elif model == "icnn1d":
+        return ICNN1DClassifier(input_length, num_classes)
+    elif model == "icnnnp":
+        return ICNNNPClassifier(input_length, num_classes)
+    elif model == "icnnnp":
+        return CNNNPClassifier(input_length, num_classes)
     elif model == "resnet1d":
         return ResNet1DClassifier(input_length, num_classes)
     elif model == "mlp":
@@ -40,6 +46,78 @@ class CNN1DClassifier(nn.Module):
         x = self.pool(x).squeeze(-1)
         return self.fc(x)
     
+
+class CNNNPClassifier(nn.Module):
+    def __init__(self, input_length: int, num_classes: int):
+        super().__init__()
+
+        self.conv1 = nn.Conv1d(1, 16, kernel_size=7, padding=3)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=7, padding=3)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=7, padding=3)
+
+        self.flatten = nn.Flatten()
+        self.fc = nn.Linear(64 * input_length, num_classes)
+
+    def forward(self, x):
+        x = x.unsqueeze(1)
+
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+
+        x = self.flatten(x)
+        return self.fc(x)
+
+class ICNNNPClassifier(nn.Module):
+    def __init__(self, input_length: int, num_classes: int):
+        super().__init__()
+
+        self.conv1 = nn.Conv1d(1, 16, kernel_size=7, padding=3)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=7, padding=3)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=7, padding=3)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=7, padding=3)
+        self.conv5 = nn.Conv1d(128, 256, kernel_size=7, padding=3)
+
+        self.flatten = nn.Flatten()
+        self.fc = nn.Linear(256 * input_length, num_classes)
+
+    def forward(self, x):
+        x = x.unsqueeze(1)
+
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = F.relu(self.conv5(x))
+        x = self.flatten(x)
+        return self.fc(x)
+    
+
+class ICNN1DClassifier(nn.Module):
+    def __init__(self, input_length: int, num_classes: int):
+        super().__init__()
+
+        self.conv1 = nn.Conv1d(1, 16, kernel_size=7, padding=3)
+        self.conv2 = nn.Conv1d(16, 32, kernel_size=7, padding=3)
+        self.conv3 = nn.Conv1d(32, 64, kernel_size=7, padding=3)
+        self.conv4 = nn.Conv1d(64, 128, kernel_size=7, padding=3)
+        self.conv5 = nn.Conv1d(128, 256, kernel_size=7, padding=3)
+
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Linear(256, num_classes)
+
+    def forward(self, x):
+        x = x.unsqueeze(1)
+
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = F.relu(self.conv5(x))
+
+        x = self.pool(x).squeeze(-1)
+        return self.fc(x)
+
 
 class ResNet1DClassifier(nn.Module):
     def __init__(self, input_length: int, num_classes: int):

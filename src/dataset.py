@@ -54,7 +54,12 @@ class GasDataModule(L.LightningDataModule):
     def _collate_fn(self, batch):
         x, y = zip(*batch)
         x = torch.tensor(np.stack(x), dtype=torch.float32)
-        y = torch.tensor(y, dtype=torch.int64)
+
+        # # Index
+        # y = torch.tensor(y, dtype=torch.int64)
+
+        # One-Hot Encoding
+        y = torch.tensor(y, dtype=torch.float32)
         return x, y
     
     def train_dataloader(self):

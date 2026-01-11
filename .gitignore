@@ -14,5 +14,6 @@ logs/
 checkpoint/
 data/*
 wandb
+result
 
 # Personal
