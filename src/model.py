@@ -13,7 +13,7 @@ def create_model(
         return ICNN1DClassifier(input_length, num_classes)
     elif model == "icnnnp":
         return ICNNNPClassifier(input_length, num_classes)
-    elif model == "icnnnp":
+    elif model == "cnnnp":
         return CNNNPClassifier(input_length, num_classes)
     elif model == "resnet1d":
         return ResNet1DClassifier(input_length, num_classes)

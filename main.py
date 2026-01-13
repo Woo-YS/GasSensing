@@ -2,12 +2,14 @@ import os
 import glob
 import argparse
 import pickle
+import warnings
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import wandb
 from sklearn.metrics import confusion_matrix, classification_report
 from sklearn.model_selection import train_test_split, StratifiedKFold
 
@@ -26,9 +28,9 @@ from torchmetrics.classification import (
 
 from src.model import create_model
 from src.dataset import GasDataModule
-from src.utils import SEED
+from src.utils import SEED, build_samples
 
-
+warnings.filterwarnings("ignore")
 L.seed_everything(SEED)
 
 
@@ -51,6 +53,11 @@ class GasClsModel(L.LightningModule):
 
         # One-Hot Encoding loss_fn
         self.criterion = nn.BCEWithLogitsLoss()
+
+        self.val_acc = MulticlassAccuracy(num_classes=3)
+        self.val_precision = MulticlassPrecision(num_classes=3, average="macro")
+        self.val_recall = MulticlassRecall(num_classes=3, average="macro")
+        self.val_f1 = MulticlassF1Score(num_classes=3, average="macro")
         
         self.test_acc = MulticlassAccuracy(num_classes=num_classes)
         self.test_precision = MulticlassPrecision(num_classes=num_classes, average="macro")
@@ -98,8 +105,16 @@ class GasClsModel(L.LightningModule):
         targets = torch.argmax(y, dim=1)
         acc = (preds == targets).float().mean()
 
+        self.val_acc(preds, targets)
+        self.val_precision(preds, targets)
+        self.val_recall(preds, targets)
+        self.val_f1(preds, targets)
+
         self.log("val_loss", loss, prog_bar=True)
         self.log("val_acc", acc, prog_bar=True)
+        self.log("val_precision", self.val_precision)
+        self.log("val_recall", self.val_recall)
+        self.log("val_f1", self.val_f1)
 
     def test_step(self, batch, batch_idx):
         x, y = batch
@@ -162,29 +177,6 @@ class GasClsModel(L.LightningModule):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
 
 
-def build_samples(df: dict, gas_to_label: dict):
-    samples = []
-    labels = []
-
-    for gas, label in gas_to_label.items():
-        merge = df[gas]["merge"].to_numpy()
-        time = merge[:, 0]
-        signal = merge[:, 1:]
-
-        for i in range(signal.shape[1]):
-            samples.append(signal[:, i].astype(np.float32))
-            labels.append(label)
-
-    x = np.stack(samples)
-    num_classes = len(gas_to_label)
-    y_index = np.array(labels)
-    y_onehot = np.eye(num_classes, dtype=np.float32)[labels]
-
-    print("x shape", x.shape)
-    print("y_index shape", y_index.shape)
-    print("y_onehot shape", y_onehot.shape)
-    return x, y_index, y_onehot
-
 def main(args):
     os.makedirs(args.save, exist_ok=True)
     
@@ -204,6 +196,8 @@ def main(args):
         project="Gas",
         name=f"{args.model_name}_{datetime.now().strftime("%m%d_%H%M%S")}"
     )
+    wandb_run = wandb_logger.experiment
+    fold_table = wandb.Table(columns=["Fold", "Acc", "Precision", "Recall", "F1"])
     
     gas_to_label = {
         "acetone": 0,
@@ -225,35 +219,150 @@ def main(args):
         df[gas][data_type] = obj
     X, y_index, y_onehot = build_samples(df, gas_to_label)
 
-    # skf = StratifiedKFold(
-    #     n_splits=5,
-    #     shuffle=True,
-    #     random_state=SEED
-    # )
+    X_train, X_test, y_index_train, y_index_test, y_onehot_train, y_onehot_test = \
+        train_test_split(
+            X, y_index, y_onehot,
+            test_size=0.2,
+            random_state=SEED,
+            stratify=y_index
+        )
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y_onehot,
-        test_size=0.2,
-        random_state=SEED,
-        stratify=y_onehot,
-    )
+    train_data = (X_train, y_index_train, y_onehot_train)
+    test_data = (X_test, y_index_test, y_onehot_test)
 
-    train_data = (X_train, y_train)
-    test_data = (X_test, y_test)
-
-    trainer = L.Trainer(
-        accelerator=args.device,
-        devices=1,
-        max_epochs=args.epoch,
-        logger=wandb_logger,
-        callbacks=[checkpoint_callback, early_stopping],
-    )
-
+    print("Start Train")
     if args.mode == 'train':
-        model = GasClsModel(args.model_name, input_length=7300)
-        trainer.fit(model, GasDataModule(train_data, args.batch))
+        print("---------------K-Fold---------------")
+        
+        skf = StratifiedKFold(
+            n_splits=5,
+            shuffle=True,
+            random_state=SEED
+        )
+
+        fold_results = {
+            "acc": [],
+            "precision": [],
+            "recall": [],
+            "f1": []
+        }
+
+        for fold, (tr_idx, val_idx) in enumerate(
+            skf.split(X_train, y_index_train)
+        ):
+            print(f"\n--- Fold {fold+1}/5 ---")
+
+            X_tr, X_val = X_train[tr_idx], X_train[val_idx]
+            y_tr, y_val = y_onehot_train[tr_idx], y_onehot_train[val_idx]
+
+            fold_dm = GasDataModule(
+                train_data=(X_tr, y_tr),
+                val_data=(X_val, y_val),
+                batch_size=args.batch,
+            )
+
+            fold_model = GasClsModel(
+                model_name=args.model_name,
+                input_length=7300
+            )
+
+            fold_trainer = L.Trainer(
+                accelerator=args.device,
+                devices=1,
+                max_epochs=args.epoch,
+                logger=False,
+                enable_checkpointing=False
+            )
+
+            fold_trainer.fit(fold_model, datamodule=fold_dm)
+
+            val_metrics = fold_trainer.callback_metrics
+
+            val_acc = val_metrics["val_acc"].item()
+            val_precision = val_metrics["val_precision"].item()
+            val_recall = val_metrics["val_recall"].item()
+            val_f1 = val_metrics["val_f1"].item()
+
+            fold_results["acc"].append(val_acc)
+            fold_results["precision"].append(val_precision)
+            fold_results["recall"].append(val_recall)
+            fold_results["f1"].append(val_f1)
+
+            fold_table.add_data(
+                fold + 1,
+                val_acc,
+                val_precision,
+                val_recall,
+                val_f1
+            )
+
+        print("\n[Per-Fold Validation Result]")
+        print(f"{'Fold':<6} {'Acc':>12} {'Precision':>12} {'Recall':>12} {'F1':>12}")
+        for i in range(len(fold_results["acc"])):
+            print(
+                f"{i+1:<6} "
+                f"{fold_results['acc'][i]:>12.8f} "
+                f"{fold_results['precision'][i]:>12.8f} "
+                f"{fold_results['recall'][i]:>12.8f} "
+                f"{fold_results['f1'][i]:>12.8f}"
+            )
+        wandb_run.log({"kfold/per_fold_results": fold_table})
+
+        print("\n[K-Fold Validation Result]")
+        for k, v in fold_results.items():
+            print(
+                f"{k.upper():<10} "
+                f"Mean = {np.mean(v):.8f}, "
+                f"Std = {np.std(v):.8f}"
+            )
+        wandb_run.log({
+            "kfold/acc_mean": np.mean(fold_results["acc"]),
+            "kfold/acc_std": np.std(fold_results["acc"]),
+            "kfold/precision_mean": np.mean(fold_results["precision"]),
+            "kfold/precision_std": np.std(fold_results["precision"]),
+            "kfold/recall_mean": np.mean(fold_results["recall"]),
+            "kfold/recall_std": np.std(fold_results["recall"]),
+            "kfold/f1_mean": np.mean(fold_results["f1"]),
+            "kfold/f1_std": np.std(fold_results["f1"]),
+        })
+
+        print("---------------Final---------------")
+        X_tr, X_val, y_tr, y_val = train_test_split(
+            X_train, y_onehot_train,
+            test_size=0.1,
+            random_state=SEED,
+            stratify=y_index_train
+        )
+
+        final_dm = GasDataModule(
+            train_data=(X_tr, y_tr),
+            val_data=(X_val, y_val),
+            test_data=(X_test, y_onehot_test),
+            batch_size=args.batch,
+        )
+
+        final_model = GasClsModel(args.model_name, input_length=7300)
+
+        final_trainer = L.Trainer(
+            accelerator=args.device,
+            devices=1,
+            max_epochs=args.epoch,
+            logger=wandb_logger,
+            callbacks=[checkpoint_callback, early_stopping],
+        )
+
+        final_trainer.fit(final_model, datamodule=final_dm)
+        final_trainer.test(final_model, datamodule=final_dm)
+
     elif args.mode == 'test':
-        model = GasClsModel.load_from_checkpoint(
+        test_dm = GasDataModule(
+            train_data=None,
+            val_data=None,
+            test_data=(X_test, y_onehot_test),
+            batch_size=args.batch,
+        )
+
+        test_model = GasClsModel.load_from_checkpoint(
             args.ckpt,
             model=create_model(
                 model=args.model_name,
@@ -263,7 +372,15 @@ def main(args):
             num_classes=3,
         )
 
-        trainer.test(model, GasDataModule(test_data, args.batch))
+        test_trainer = L.Trainer(
+            accelerator=args.device,
+            devices=1,
+            max_epochs=args.epoch,
+            logger=wandb_logger,
+            callbacks=[checkpoint_callback, early_stopping],
+        )
+
+        test_trainer.test(test_model, datamodule=test_dm)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

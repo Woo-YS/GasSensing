@@ -16,13 +16,21 @@ L.seed_everything(SEED)
 class GasDataModule(L.LightningDataModule):
     def __init__(
             self,
-            data: tuple,
+            train_data: tuple | None = None,
+            val_data: tuple | None = None,
+            test_data: tuple | None = None,
             batch_size: int = 64,
         ):
         super().__init__()
 
-        self.x, self.y = data
+        self.train_data = train_data
+        self.val_data = val_data
+        self.test_data = test_data
         self.batch_size = batch_size
+
+        self.train_dataset = None
+        self.val_dataset = None
+        self.test_dataset = None
 
     def setup(self, stage: str):
         if self.trainer is not None:
@@ -34,18 +42,15 @@ class GasDataModule(L.LightningDataModule):
         else:
             self.batch_size_per_device = self.batch_size
 
-        if stage == 'fit':
-            train_x, val_x, train_y, val_y = train_test_split(
-                self.x, self.y,
-                test_size=0.2,
-                random_state=SEED,
-                stratify=self.y,
-            )
-            self.train_dataset = list(zip(train_x, train_y))
-            self.val_dataset = list(zip(val_x, val_y))
+        if stage == "fit" or stage is None:
+            if self.train_data is not None:
+                self.train_dataset = list(zip(*self.train_data))
+            if self.val_data is not None:
+                self.val_dataset = list(zip(*self.val_data))
             
-        elif stage == 'test':
-            self.test_dataset = list(zip(self.x, self.y))
+        if stage == "test" or stage is None:
+            if self.test_data is not None:
+                self.test_dataset = list(zip(*self.test_data))
 
         elif stage == 'predict':
             self.pred_dataset = 1
@@ -59,17 +64,17 @@ class GasDataModule(L.LightningDataModule):
         # y = torch.tensor(y, dtype=torch.int64)
 
         # One-Hot Encoding
-        y = torch.tensor(y, dtype=torch.float32)
+        y = torch.tensor(np.stack(y), dtype=torch.float32)
         return x, y
     
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size_per_device, shuffle=True, collate_fn=self._collate_fn)
+        return DataLoader(self.train_dataset, batch_size=self.batch_size_per_device, shuffle=True, pin_memory=True, collate_fn=self._collate_fn)
     
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.batch_size_per_device, shuffle=False, collate_fn=self._collate_fn)
+        return DataLoader(self.val_dataset, batch_size=self.batch_size_per_device, shuffle=False, pin_memory=True, collate_fn=self._collate_fn)
     
     def test_dataloader(self):
-        return DataLoader(self.test_dataset, batch_size=self.batch_size_per_device, shuffle=False, collate_fn=self._collate_fn)
+        return DataLoader(self.test_dataset, batch_size=self.batch_size_per_device, shuffle=False, pin_memory=True, collate_fn=self._collate_fn)
     
     def predict_dataloader(self):
         return DataLoader(self.pred_dataset, batch_size=self.batch_size_per_device, shuffle=False, collate_fn=self._collate_fn)
