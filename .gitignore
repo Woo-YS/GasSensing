@@ -5,6 +5,7 @@
 *.pth
 *.ckpt
 *.log
+*.ipynb
 
 # Ignore directories
 .venv
@@ -13,5 +14,9 @@ __pycache__/
 logs/
 checkpoints/
 data/*
+result/*
+result_analysis/*
+wandb
+
 
 # Personal
