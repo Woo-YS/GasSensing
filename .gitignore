@@ -1,4 +1,6 @@
-# Main
+# Claude
+.claude
+Claude.md
 
 # Ignore files
 *.pt
@@ -18,5 +20,6 @@ result/*
 result_analysis/*
 wandb
 result_pipeline
+paper/*
 
 # Personal
